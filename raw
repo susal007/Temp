@@ -1,0 +1,88 @@
+library("splatter") #simulate
+library("scater")#library and fuction to work with single ell data and structure
+library("scDD")#simulate differential expression
+library("ExperimentHub")#import data
+library("sctransform")#2
+library("muscat")
+
+
+?splatter::scDDSimulate(params)
+#Simulate counts using the scDD method
+
+# plan is to process kang data using muscat pkg then estimate params for each 
+# cluster of cells
+#Muscat
+eh <- ExperimentHub()#Create an ExperiemntHub object
+#The ExperimentHub package provides a client interface
+#to resources stored at the ExperimentHub web service. It has similar functionality to AnnotationHub package.
+query(eh, "Kang")# retrieve any records that match keyword kang
+(sce <- eh[["EH2259"]])
+sce <- sce[rowSums(counts(sce) > 0) > 0, ]
+qc <- perCellQCMetrics(sce)
+ol <- isOutlier(metric = qc$detected, nmads = 2, log = TRUE)
+sce <- sce[, !ol]
+sce <- sce[rowSums(counts(sce) > 1) >= 10, ]
+sce <- computeLibraryFactors(sce)
+sce <- logNormCounts(sce)
+
+assays(sce)$vstresiduals <- vst(counts(sce), show_progress = FALSE)$y
+
+# divide the data by cell type first based on the muscat vignette then etimate 
+# parameters for each cell type separately.
+#muscat
+
+sce$id <- paste0(sce$stim, sce$ind)
+(sce <- prepSCE(sce, 
+                cluster_id = "cell", # subpopulation assignments
+                group_id = "stim",   # group IDs (ctrl/stim)
+                sample_id = "id",    # sample IDs (ctrl/stim.1234)
+                drop = TRUE))  
+
+nk <- length(kids <- levels(sce$cluster_id))
+ns <- length(sids <- levels(sce$sample_id))#
+names(kids) <- kids; names(sids) <- sids
+
+t(table(sce$cluster_id, sce$sample_id))
+sce <- runUMAP(sce, pca = 20)
+# Extract all separately with a loop
+cell_dat<-list()
+i <- 1
+
+for (clus_id in unique(sce@colData$cluster_id)) {
+  
+  clus_idx<-which(unique(sce@colData$cluster_id) %in% clus_id)
+  cell_idx<-subset(sce@colData,cluster_id==clus_id )
+  cell_count_mx<-sce@assays@data@listData$counts[,which(colnames(sce@assays@data@listData$counts) %in% rownames(cell_idx))]
+  cell_conds<-as.numeric(grepl("stim",as.character(cell_idx$group_id)))
+  
+  bc<-pb@assays@data[[clus_idx]]
+  
+  colnames(bc)<-gsub("ctrl","ctrl_",colnames(bc))
+  colnames(bc)<-gsub("stim","stim_",colnames(bc))
+  
+  # conditions ctrl vs sti
+  conds<-as.numeric(grepl("stim",colnames(bc)))+1
+  
+  # biological reps
+  biols<-colnames(bc)<-gsub("stim","stim_",colnames(bc))
+  
+  params <- splatter::scDDEstimate(bc,conditions=conds)
+  mysim<-splatter::scDDSimulate(params)
+  
+  new_dat<-list("cell_idx"=cell_idx,"cell_count_mx"=cell_count_mx,
+                "cell_conds"=cell_conds, "cell_params"=params, "cell_sim"=mysim)
+  
+  cell_dat[[i]] <- new_dat
+  
+  i <- i + 1
+}  
+
+cell_dat[[4]][2]
+  unique(sce@colData$cluster_id)
+
+save.image("scSIM2.Rdata")
+data(sce)
+library(SingleCellExperiment)
+sce<-prepSim(sce)
+(sim<-simData(sce,n_genes=100,n_cells=10,p_dd=c(0.95,0,0.05,0,0,0)))
+  
